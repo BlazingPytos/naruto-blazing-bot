@@ -1,57 +1,41 @@
-# Naruto Blazing Bot
+# Blazing Bot – Source Code
 
-An automation bot for Naruto Blazing Revival, designed to operate through LDPlayer using Android Debug Bridge (ADB).
+This directory contains the Python source code and development resources for Naruto Blazing Bot.
 
-## Features
+## Contents
 
-- Ninja Road automation
-- Phantom Castle automation
-- Normal Mission automation
-- Automatic battle detection and interaction
-- Stamina management
-- F8 pause/resume hotkey
-- F9 graceful shutdown and session report
-- Automatic updates through the Blazing Bot Launcher
-- Persistent user data across updates
-
-## Requirements
-
-- Windows 10/11
-- LDPlayer
-- Android Debug Bridge (ADB)
-- 720 × 1280 emulator resolution recommended
-
-## Installation
-
-1. Visit the [Releases](https://github.com/BlazingPytos/naruto-blazing-bot/releases) page.
-2. Download `BlazingBotLauncher.exe`.
-3. Run the launcher.
-4. Allow it to download and install the latest stable release.
-5. Start LDPlayer and enable ADB.
-
-## Controls
-
-| Key | Action |
+| File / Directory | Description |
 |---|---|
-| F8 | Pause / Resume |
-| F9 | Finish current content and generate session report |
+| `blazing_bot_v2.4_launcher_ready.py` | Main bot automation script |
+| `launcher/launcher.py` | Launcher source code |
+| `templates/` | Image recognition templates used by the bot |
+| `build_bot.bat` | Bot compilation script |
+| `build_launcher.bat` | Launcher compilation script |
 
-## Source Code and Licensing
+## Development Requirements
 
-This repository makes the source code publicly viewable for transparency and inspection.
+- Python 3.12 or newer
+- OpenCV
+- NumPy
+- adbutils
+- Pillow
+- pynput
+- PyInstaller
 
-**This is not an open-source project.**
+## Building
 
-The software is provided under the Blazing Bot Restrictive Source-Available Licence.
+The bot and launcher are packaged separately using PyInstaller.
 
-- Personal, non-commercial use only.
-- Modification is prohibited.
-- Commercial use is prohibited.
-- Redistribution requires prior written permission.
-- All copyright and ownership rights remain with BlazingPytos.
+Refer to the corresponding build scripts for compilation instructions.
 
-See the [LICENSE](LICENSE) file for the complete terms.
+## Important
 
-## Disclaimer
+The source code is publicly available for inspection only.
 
-This is an independent fan-made project and is not affiliated with or endorsed by the original Naruto Blazing developers or rights holders.
+Modification, commercial use and redistribution are prohibited without prior written permission from BlazingPytos.
+
+See the repository's root [LICENSE](../LICENSE) file for the complete terms.
+
+---
+
+Copyright © 2026 BlazingPytos. All rights reserved.
