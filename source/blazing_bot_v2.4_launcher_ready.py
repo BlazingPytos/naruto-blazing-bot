@@ -181,6 +181,7 @@ try:
 
     PHANTOM_CASTLE_ACTIONS = SHARED_ACTIONS + [
         ("templates/stamina_no.png", "PC Out of Stamina - Decline Refill", 0.88),
+        ("templates/pc_runs_limit_ok.png", "PC Runs Limit Popup OK", 0.88),
         ("templates/pc_victory.png", "PC Victory Banner", 0.85),
         ("templates/pc_reward_ok.png", "PC Post-Fight Reward OK", 0.85),
         ("templates/pc_start_btn.png", "PC Start Battle", 0.85),
@@ -770,6 +771,49 @@ try:
                                 stats["pc_battles"] += 1
                             elif "PC Victory Banner" in label:
                                 stats["pc_victories"] += 1
+                            elif "PC Runs Limit Popup" in label:
+                                # This rare limit popup also blocks the battle
+                                # after opponent selection; treat it as a 25m
+                                # PC cooldown without spending pearls.
+                                if stats["pc_battles"] > 0:
+                                    stats["pc_battles"] -= 1
+                                stats["pc_cycles"] += 1
+                                cooldown_started = time.time()
+
+                                if stop_after_current:
+                                    log("[Phantom Castle] F9 stop requested; session complete.")
+                                    mode = "DONE"
+                                elif selected_mode == "PHANTOM_CASTLE_ONLY":
+                                    last_pc_run_time = cooldown_started
+                                    save_last_pc_time(last_pc_run_time)
+                                    pc_main_menu_reached = False
+                                    pc_retry_until = cooldown_started + PC_ONLY_RETRY_SECONDS
+                                    retry_at = time.strftime(
+                                        "%H:%M:%S", time.localtime(pc_retry_until)
+                                    )
+                                    log(
+                                        "[Phantom Castle] Rare battle-limit popup dismissed. "
+                                        f"Waiting 25 minutes; retry at {retry_at}."
+                                    )
+                                    mode = "PC_WAIT"
+                                else:
+                                    # Dual mode normally uses a 20m readiness
+                                    # interval. Offset the saved timestamp by 5m
+                                    # so its existing readiness check enforces 25m.
+                                    last_pc_run_time = cooldown_started + (
+                                        PC_ONLY_RETRY_SECONDS - PC_REGEN_SECONDS
+                                    )
+                                    save_last_pc_time(last_pc_run_time)
+                                    next_pc = time.strftime(
+                                        "%H:%M:%S",
+                                        time.localtime(last_pc_run_time + PC_REGEN_SECONDS)
+                                    )
+                                    log(
+                                        "[Phantom Castle] Rare battle-limit popup dismissed. "
+                                        f"Returning to Ninja Road; PC retry available at {next_pc}."
+                                    )
+                                    mode = "SWITCH_TO_NR"
+
                             elif "PC Out of Stamina" in label:
                                 # Undo the opponent-selection count for the
                                 # unstarted battle when stamina is exhausted.
