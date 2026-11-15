@@ -7,34 +7,32 @@ This directory contains the Python source code and development resources for Nar
 | File / Directory | Description |
 |---|---|
 | `blazing_bot_v2.4_launcher_ready.py` | Main bot automation script |
-| `launcher/launcher.py` | Launcher source code |
+| `launcher/` | Launcher source code and build script |
 | `templates/` | Image recognition templates used by the bot |
 | `build_bot.bat` | Bot compilation script |
-| `build_launcher.bat` | Launcher compilation script |
+| `requirements.txt` | Python dependencies |
+| `release_tools/` | Release packaging tools |
 
-## Development Requirements
+## Requirements
 
+- Windows 10/11
 - Python 3.12 or newer
-- OpenCV
-- NumPy
-- adbutils
-- Pillow
-- pynput
-- PyInstaller
+- LDPlayer and ADB
+- Dependencies listed in `requirements.txt`
 
 ## Building
 
-The bot and launcher are packaged separately using PyInstaller.
+1. Install the Python dependencies.
+2. Run `build_bot.bat` to build the bot.
+3. For the launcher, open `launcher/` and run `build_launcher.bat`.
 
-Refer to the corresponding build scripts for compilation instructions.
+## Licence
 
-## Important
+This source code is available for inspection and personal, non-commercial use only.
 
-The source code is publicly available for inspection only.
+Modification, commercial use and redistribution are prohibited without prior written permission.
 
-Modification, commercial use and redistribution are prohibited without prior written permission from BlazingPytos.
-
-See the repository's root [LICENSE](../LICENSE) file for the complete terms.
+See the repository's root `LICENSE` file for the complete terms.
 
 ---
 
