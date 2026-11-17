@@ -4,6 +4,14 @@ import time
 import random
 import traceback
 from collections import defaultdict
+from stability_support import (
+    ProcessMemoryMonitor,
+    StageStatistics,
+    is_opencv_allocation_error,
+    screenshot_as_grayscale,
+    start_keyboard_listener,
+    stop_keyboard_listener,
+)
 
 try:
     import cv2
@@ -150,19 +158,16 @@ try:
 
     try:
         from pynput import keyboard as pynput_kb
-
-        def on_press(key):
-            if key == pynput_kb.Key.f8:
-                toggle_pause()
-            elif key == pynput_kb.Key.f9:
-                request_graceful_stop()
-
-        listener = pynput_kb.Listener(on_press=on_press)
-        listener.daemon = True
-        listener.start()
+        listener = start_keyboard_listener(
+            pynput_kb, toggle_pause, request_graceful_stop
+        )
         hotkey_msg = "F8 = Pause/Resume | F9 = Finish current content and report"
     except ImportError:
         hotkey_msg = "Install pynput to enable F8/F9 hotkeys"
+    except Exception as e:
+        listener = None
+        hotkey_msg = f"F8/F9 unavailable: keyboard listener failed ({e})"
+        log(f"[Hotkeys] {hotkey_msg}")
 
     # ------------------------ ACTION INVENTORY ----------------------
     SHARED_ACTIONS = [
@@ -221,7 +226,8 @@ try:
 
         try:
             with Image.open(full_path) as image:
-                array = np.asarray(image.convert("L"))
+                with image.convert("L") as grayscale:
+                    array = np.array(grayscale, copy=True)
             if array.ndim != 2 or array.size == 0:
                 raise ValueError("Empty or invalid grayscale image")
 
@@ -235,6 +241,8 @@ try:
             TEMPLATE_CACHE[rel_path] = item
             return item
         except Exception as e:
+            if isinstance(e, MemoryError):
+                raise
             log(f"[Template Error] {rel_path}: {e}")
             TEMPLATE_CACHE[rel_path] = None
             MISSING_TEMPLATES.append(rel_path)
@@ -267,12 +275,7 @@ try:
     # ------------------------ SCREEN CAPTURE ------------------------
     def get_gray_screenshot():
         try:
-            image = device.screenshot()
-            if image is None:
-                raise RuntimeError("Empty ADB screenshot")
-            gray = np.asarray(image.convert("L"))
-            if gray.ndim != 2 or gray.size == 0:
-                raise RuntimeError("Invalid screenshot array")
+            gray = screenshot_as_grayscale(device, np)
 
             h, w = gray.shape
             if (w, h) != (EXPECTED_WIDTH, EXPECTED_HEIGHT):
@@ -282,13 +285,12 @@ try:
                 )
             return gray
         except Exception as e:
+            if isinstance(e, MemoryError):
+                raise
             log(f"[ADB] Screenshot failed: {e}; reconnecting.")
             if not connect_ldplayer():
                 raise RuntimeError("ADB screenshot failed and reconnect failed")
-            gray = np.asarray(device.screenshot().convert("L"))
-            if gray.ndim != 2 or gray.size == 0:
-                raise RuntimeError("Invalid screenshot after reconnect")
-            return gray
+            return screenshot_as_grayscale(device, np)
 
     # ----------------------- SCREEN WATCHDOG ------------------------
     def fingerprint(gray):
@@ -363,6 +365,8 @@ try:
                 cached["height"],
             )
         except cv2.error as e:
+            if is_opencv_allocation_error(e):
+                raise MemoryError(f"OpenCV could not allocate memory matching {rel_path}") from e
             log(f"[OpenCV] {rel_path}: {e}")
             return None
 
@@ -457,14 +461,14 @@ try:
         "start_time": time.time(),
         "nr_completed": 0,
         "nr_wipes": 0,
-        "wipe_stages": [],
-        "all_run_final_stages": [],
         "total_nr_maps": 0,
         "pc_battles": 0,
         "pc_victories": 0,
         "pc_cycles": 0,
         "normal_mission_runs": 0,
     }
+    stage_stats = StageStatistics(history_limit=100)
+    memory_monitor = ProcessMemoryMonitor(interval_seconds=60.0)
 
     def format_duration(seconds):
         return (
@@ -478,13 +482,19 @@ try:
         ended = stats["nr_completed"] + stats["nr_wipes"]
         clear_rate = f"{100 * stats['nr_completed'] / ended:.1f}%" if ended else "N/A"
         avg_wipe = (
-            f"Map {np.mean(stats['wipe_stages']):.1f}/20"
-            if stats["wipe_stages"] else "N/A (0 wipes)"
+            f"Map {stage_stats.wipe_total / stage_stats.wipe_count:.1f}/20"
+            if stage_stats.wipe_count else "N/A (0 wipes)"
         )
-        wipe_history = ", ".join(map(str, stats["wipe_stages"])) or "None"
+        recent_wipes = ", ".join(map(str, stage_stats.recent_wipes)) or "None"
+        wipe_history = (
+            f"{recent_wipes} (latest {len(stage_stats.recent_wipes)}"
+            f" of {stage_stats.wipe_count})"
+            if stage_stats.wipe_count > len(stage_stats.recent_wipes)
+            else recent_wipes
+        )
         avg_all = (
-            f"Map {np.mean(stats['all_run_final_stages']):.1f}/20"
-            if stats["all_run_final_stages"] else "N/A"
+            f"Map {stage_stats.all_total / stage_stats.all_count:.1f}/20"
+            if stage_stats.all_count else "N/A"
         )
         pc_rate = (
             f"{100 * stats['pc_victories'] / stats['pc_battles']:.1f}%"
@@ -522,6 +532,15 @@ try:
         print("  [STABILITY]")
         print(f"  ADB Reconnection Attempts : {connection_retries}")
         print(f"  Last Action               : {last_action_label}")
+        memory = memory_monitor.snapshot()
+        def format_memory(value):
+            return f"{value / (1024 * 1024):.1f} MB" if value is not None else "N/A"
+        print(f"  Current RAM               : {format_memory(memory['current'])}")
+        print(f"  Average RAM               : {format_memory(memory['average'])}")
+        print(f"  Peak RAM                  : {format_memory(memory['peak'])}")
+        print(f"  RAM Samples               : {memory['sample_count']}")
+        if memory["error"]:
+            print(f"  RAM Monitor Status        : {memory['error']}")
         print("=" * 54 + "\n")
 
     # ------------------------ NAVIGATION ----------------------------
@@ -655,6 +674,7 @@ try:
 
     # ------------------------- MAIN LOOP ----------------------------
     try:
+        memory_monitor.start()
         while True:
             if paused:
                 time.sleep(0.5)
@@ -714,12 +734,11 @@ try:
                                 log(f"--- [Map {current_map}/20] ---")
                             elif "Mission Complete Banner" in label:
                                 stats["nr_completed"] += 1
-                                stats["all_run_final_stages"].append(20)
+                                stage_stats.record(20)
                             elif "Team Wiped" in label:
                                 stage = current_map if current_map > 0 else 1
                                 stats["nr_wipes"] += 1
-                                stats["wipe_stages"].append(stage)
-                                stats["all_run_final_stages"].append(stage)
+                                stage_stats.record(stage, wiped=True)
                                 log(f"[Stats] Team wipe on Map {stage}/20.")
                             elif "NR Out of Stamina" in label:
                                 nr_stamina_cooldown_until = time.time() + PC_REGEN_SECONDS
@@ -984,6 +1003,18 @@ try:
                 if not acted:
                     time.sleep(1.0)
 
+            except MemoryError as e:
+                log(f"[Fatal Memory Error] {e}. Stopping automation safely.")
+                raise
+            except cv2.error as e:
+                if is_opencv_allocation_error(e):
+                    log(f"[Fatal OpenCV Memory Error] {e}. Stopping automation safely.")
+                    raise MemoryError("OpenCV memory allocation failed") from e
+                log(f"[Warning] Main-loop OpenCV error: {e}")
+                log("[ADB] Attempting reconnection...")
+                if not connect_ldplayer():
+                    raise RuntimeError("LDPlayer reconnection failed")
+                time.sleep(ADB_RETRY_DELAY)
             except Exception as e:
                 log(f"[Warning] Main-loop error: {e}")
                 log("[ADB] Attempting reconnection...")
@@ -992,11 +1023,12 @@ try:
                 time.sleep(ADB_RETRY_DELAY)
 
     finally:
+        memory_monitor.stop()
         if listener is not None:
             try:
-                listener.stop()
-            except Exception:
-                pass
+                stop_keyboard_listener(listener)
+            except Exception as e:
+                log(f"[Hotkeys] Listener shutdown error: {e}")
 
         if not report_printed:
             print_session_report()
