@@ -12,6 +12,12 @@ from stability_support import (
     start_keyboard_listener,
     stop_keyboard_listener,
 )
+from recovery_support import (
+    MidnightRecoveryController,
+    recovery_shutdown_ready,
+    resume_mode_after_recovery,
+    screen_pair_matches,
+)
 
 try:
     import cv2
@@ -41,9 +47,38 @@ try:
     TRANSITION_TIMEOUT = 12
     STUCK_WARNING = 60
 
-    # Optional (x1, y1, x2, y2) regions, only add coordinates after
-    # confirming them at 720x1280. Empty means full-screen matching.
-    TEMPLATE_ROI = {}
+    # Optional (x1, y1, x2, y2) search regions confirmed from the supplied
+    # 720x1280 restart references. Other templates use full-screen matching.
+    TEMPLATE_ROI = {
+        "templates/midnight_recovery/data_update_context.png": (60, 480, 660, 665),
+        "templates/midnight_recovery/data_update.png": (250, 645, 465, 750),
+        "templates/midnight_recovery/warning.png": (150, 300, 570, 800),
+        "templates/midnight_recovery/title_screen.png": (160, 700, 600, 920),
+        "templates/midnight_recovery/login_bonus_context.png": (40, 75, 680, 195),
+        "templates/midnight_recovery/login_bonus.png": (240, 1000, 480, 1110),
+        "templates/midnight_recovery/news_context.png": (0, 75, 720, 340),
+        "templates/midnight_recovery/news.png": (230, 990, 500, 1110),
+    }
+
+    RECOVERY_CONTEXT_TEMPLATES = {
+        "data_update": "templates/midnight_recovery/data_update_context.png",
+        "login_bonus": "templates/midnight_recovery/login_bonus_context.png",
+        "news": "templates/midnight_recovery/news_context.png",
+    }
+    RECOVERY_BUTTON_TEMPLATES = {
+        "data_update": "templates/midnight_recovery/data_update.png",
+        "login_bonus": "templates/midnight_recovery/login_bonus.png",
+        "news": "templates/midnight_recovery/news.png",
+    }
+    RECOVERY_SINGLE_TEMPLATES = {
+        "warning": "templates/midnight_recovery/warning.png",
+        "title_screen": "templates/midnight_recovery/title_screen.png",
+    }
+    RECOVERY_TEMPLATE_PATHS = (
+        tuple(RECOVERY_CONTEXT_TEMPLATES.values())
+        + tuple(RECOVERY_BUTTON_TEMPLATES.values())
+        + tuple(RECOVERY_SINGLE_TEMPLATES.values())
+    )
 
     def log(message):
         print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
@@ -250,6 +285,9 @@ try:
 
     def preload_templates():
         paths = set()
+        # Recovery recognition must be available regardless of selected mode.
+        paths.update(RECOVERY_TEMPLATE_PATHS)
+        paths.update(NAVIGATION_TEMPLATES)
 
         if selected_mode in ("NINJA_ROAD_ONLY", "DUAL_MODE"):
             paths.update(path for path, _, _ in NINJA_ROAD_ACTIONS)
@@ -455,6 +493,68 @@ try:
         except Exception as e:
             log(f"[ADB] Click failed: {e}")
             return False
+
+    # -------------------- MIDNIGHT RESTART RECOVERY -----------------
+    recovery_controller = MidnightRecoveryController(
+        screen_timeout=60.0,
+        retry_delay=12.0,
+        max_attempts=2,
+        confirm_frames=2,
+    )
+    recovery_resume_mode = None
+
+    def recovery_screen_matches(gray):
+        matches = {}
+        for name in RECOVERY_CONTEXT_TEMPLATES:
+            context_result = match_template(
+                gray, RECOVERY_CONTEXT_TEMPLATES[name]
+            )
+            button_result = match_template(
+                gray, RECOVERY_BUTTON_TEMPLATES[name]
+            )
+            context_score = context_result[0] if context_result is not None else None
+            button_score = button_result[0] if button_result is not None else None
+            matches[name] = screen_pair_matches(
+                context_score,
+                button_score,
+                context_threshold=0.90,
+                button_threshold=0.90,
+            )
+
+        for name, path in RECOVERY_SINGLE_TEMPLATES.items():
+            matches[name] = is_visible(gray, path, 0.90)
+
+        if recovery_controller.expects_main_menu:
+            matches["main_menu"] = (
+                is_visible(gray, "templates/menu_nr_btn.png", 0.90)
+                or is_visible(gray, "templates/menu_pc_btn.png", 0.90)
+            )
+        return matches
+
+    def tap_recovery_action(action):
+        button_actions = {
+            "data_update": (
+                "templates/midnight_recovery/data_update.png",
+                "Dismiss Data Update Popup (OK)",
+            ),
+            "login_bonus": (
+                "templates/midnight_recovery/login_bonus.png",
+                "Confirm Login Bonus",
+            ),
+            "news": (
+                "templates/midnight_recovery/news.png",
+                "Close News",
+            ),
+        }
+        if action in button_actions:
+            path, label = button_actions[action]
+            return find_and_tap(gray, path, 0.90, label)
+        if action == "warning_center":
+            return safe_click(360, 640, "Continue past Warning screen")
+        if action == "title_center":
+            return safe_click(360, 640, "Tap To Start")
+        log(f"[Recovery] Refusing unknown recovery action: {action}")
+        return False
 
     # ---------------------------- STATS -----------------------------
     stats = {
@@ -677,14 +777,73 @@ try:
         memory_monitor.start()
         while True:
             if paused:
+                recovery_controller.pause()
                 time.sleep(0.5)
                 continue
+            recovery_controller.resume()
 
             try:
                 # Exactly one fresh screenshot per normal loop iteration.
                 gray = get_gray_screenshot()
                 monitor_screen(gray)
                 verify_transition(gray)
+
+                # Recovery recognition preempts every mode-specific action.
+                recovery_matches = recovery_screen_matches(gray)
+                recovery_event = recovery_controller.update(
+                    recovery_matches, tap_recovery_action
+                )
+                if recovery_controller.blocks_normal_actions or recovery_event == "complete":
+                    if recovery_resume_mode is None:
+                        recovery_resume_mode = mode
+                        pending_transition = None
+
+                    if recovery_event == "safe_wait":
+                        log(
+                            f"[Recovery] Safe wait: {recovery_controller.safe_reason}. "
+                            "No taps or normal mode actions will be sent."
+                        )
+                    elif recovery_event == "complete":
+                        previous_mode = recovery_resume_mode or mode
+                        recovery_resume_mode = None
+                        resumed_mode = resume_mode_after_recovery(
+                            selected_mode, previous_mode
+                        )
+                        if recovery_shutdown_ready(
+                            stop_after_current,
+                            recovery_controller.state,
+                            recovery_event,
+                        ):
+                            mode = "DONE"
+                            log("[Recovery] Main menu verified; honoring F9 shutdown.")
+                        else:
+                            mode = resumed_mode
+                            pc_main_menu_reached = True
+                            force_nr_startup_navigation = False
+                            log(
+                                f"[Recovery] Main menu verified; resuming "
+                                f"{mode_names[selected_mode]} via {mode}."
+                            )
+                            if selected_mode == "RAMEN_MISSION_ONLY":
+                                log(
+                                    "[Normal Mission] Recovery returned to the menu; "
+                                    "open the mission manually to resume automation."
+                                )
+                        recovery_controller.reset()
+                        if mode == "DONE":
+                            break
+                        continue
+
+                    if recovery_shutdown_ready(
+                        stop_after_current, recovery_controller.state, recovery_event
+                    ):
+                        mode = "DONE"
+                        log("[Recovery] F9 requested during safe wait; stopping without further taps.")
+                        break
+                    continue
+                elif recovery_resume_mode is not None:
+                    # A one-frame false candidate disappeared; no recovery began.
+                    recovery_resume_mode = None
 
                 acted = False
                 pc_is_ready = (
